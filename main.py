@@ -121,13 +121,21 @@ class UI:
 
 class PathManager:
 	def __init__(self, page_manager):
-		self.memory: List[str] = []
+		self.memory: List[str] = ['menu',]
+		self.page_manager = page_manager
 
 	def forward(self, name: str) -> None:
 		self.memory.append(name)
+		finded_page = filter(lambda p: p.name==name, self.page_manager.pages)
+		self.page_manager.current_page = next(finded_page)
 
 	def back(self) -> None:
-		pass
+		if len(self.memory) > 1:
+			self.memory = self.memory[:-1]
+
+		last_page = self.memory[-1]
+		self.memory = self.memory[:-1]
+		self.forward(last_page)
 
 
 @dataclass
@@ -148,8 +156,9 @@ class AskStation(AskPage):
 
 	def __init__(self, path_manager: PathManager):
 		super().__init__(self.name)
-
 		self.path_manager = path_manager
+
+		self.radio = Radio()
 		self._parser = _StationParser()
 		self.stations = self._parser.get_station_list()
 
@@ -179,6 +188,14 @@ class AskStation(AskPage):
 
 		return self.stations[station_number]
 
+	def run_callback(self, station: Station) -> None:
+		''' Запустить радиостанцию '''
+
+		self.radio.stop()
+		self.radio.select_station(station)
+		self.radio.play()
+		self.path_manager.back()
+
 
 class AskMenu(AskPage):
 	''' Главная страница '''
@@ -190,9 +207,9 @@ class AskMenu(AskPage):
 
 		self.path_manager = path_manager
 		self.callbacks = [
-			lambda *_: exit(),
-			lambda *_: self.path_manager.forward('station'),
-			lambda *_: self.path_manager.forward('volume_settings')]
+			lambda: exit(),
+			lambda: self.path_manager.forward('station'),
+			lambda: self.path_manager.forward('volume_settings')]
 
 	def show_text(self) -> None:
 		print('1. Выбрать станцию\n2. Настройка громкости\n0. Выход', end='\n'*2)
@@ -203,15 +220,36 @@ class AskMenu(AskPage):
 
 		return selected_element
 
+	def run_callback(self, index: int) -> None:
+		''' Запустить выбранный callback '''
+
+		self.callbacks[index]()
+
 
 class AskManager:
 	def __init__(self):
 		self.__asks: AskPage = []
 		self.path_manager = PathManager(self)
 
+		self.add_ask(AskMenu(path_manager=self.path_manager))
+		self.add_ask(AskStation(path_manager=self.path_manager))
+
+		self.__current_page = self.__asks[0]
+
 	@property
 	def current_page(self) -> AskPage:
-		return self.__asks[-1]
+		return self.__current_page
+
+	@current_page.setter
+	def current_page(self, page: AskPage) -> None:
+		if not isinstance(page, AskPage):
+			raise AttributeError(f'{page} is not AskPage type')
+
+		self.__current_page = page
+
+	@property
+	def pages(self) -> List[AskPage]:
+		return self.__asks
 
 	def add_ask(self, new_ask: AskPage) -> None:
 		self.__asks.append(new_ask)
@@ -222,26 +260,12 @@ class AskManager:
 
 class Controller:
 	def __init__(self):
-		self.model = Radio()
 		self.view = AskManager()
-
-		self.view.add_ask(AskStation(path_manager=self.view.path_manager))
-		self.view.add_ask(AskMenu(path_manager=self.view.path_manager))
 
 	def mainloop(self) -> None:
 		while True:
-			# try:
-			# 	station = self.view.get_input()
-			# except ValueError:
-			# 	break
-			# self.model.select_station(station)
-			# self.model.play()
-
-			try:
-				inp = self.view.get_input()
-				self.view.current_page.callbacks[inp]()
-			except KeyError:
-				print('Введено недопустимое значение. Попробуй еще раз.')
+			inp = self.view.get_input()
+			self.view.current_page.run_callback(inp)
 
 
 if __name__ == '__main__':
