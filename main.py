@@ -4,12 +4,12 @@ from typing import Any, List, Optional
 from dataclasses import dataclass
 
 import vlc
+import msvcrt
 import requests
 from bs4 import BeautifulSoup
 
 
 URL = 'https://radiopotok.ru/rock'
-'https://rock.amgradio.ru/RusRock/'
 
 
 @dataclass
@@ -81,42 +81,15 @@ class Radio:
 		if hasattr(self, 'player'):
 			self.player.stop()
 
+	def pause(self) -> None:
+		if hasattr(self, 'player'):
+			self.player.pause()
+
 	def volume(self, value: int) -> None:
 		if not hasattr(self, 'player'):
 			return
 
 		self.player.audio_set_volume(value)
-
-
-class UI:
-	def __init__(self):
-		self._parser = _StationParser()
-		self.stations = self._parser.get_station_list()
-
-	def show_station_list(self) -> None:
-		''' Отобразить список станций '''
-
-		print('Select station:')
-		i = 0
-		while i <= len(self.stations):
-			num_1 = f'{i+1}.'.ljust(4)
-			station_1 = f'{num_1} {self.stations[i]}'.ljust(40)
-			try:
-				num_2 = f'{i+2}.'.ljust(4)
-				station_2 = f'{num_2} {self.stations[i+1]}'
-			except IndexError:
-				station_2 = ''
-
-			print(station_1 + station_2)
-			i += 2
-
-	def ask_station(self) -> int:
-		''' Запросить номер станции у пользователя '''
-
-		self.show_station_list()
-		station_number = int(input('Введи номер станции: '))-1
-
-		return self.stations[station_number]
 
 
 class PathManager:
@@ -146,6 +119,9 @@ class AskPage:
 		pass
 
 	def get_input(self) -> None:
+		pass
+
+	def run_callback(self, *args, **kwargs) -> None:
 		pass
 
 
@@ -202,28 +178,109 @@ class AskMenu(AskPage):
 
 	name = 'menu'
 
-	def __init__(self, path_manager: PathManager):
+	def __init__(self, path_manager: PathManager, radio: Radio):
 		super().__init__(self.name)
 
 		self.path_manager = path_manager
+		self.radio = radio
 		self.callbacks = [
-			lambda: exit(),
+			exit,
 			lambda: self.path_manager.forward('station'),
 			lambda: self.path_manager.forward('volume_settings')]
 
 	def show_text(self) -> None:
-		print('1. Выбрать станцию\n2. Настройка громкости\n0. Выход', end='\n'*2)
+		text = 'МЕНЮ:\n1. Выбрать станцию\n2. Настройка громкости\n'
+		if hasattr(self.radio, 'player'):
+			text += ''
+		print(text + '\n0. Выход', end='\n'*2)
 
 	def get_input(self) -> int:
 		self.show_text()
-		selected_element = int(input('Введи номер строки: '))
+
+		try:
+			selected_element = int(input('Введи номер строки: '))
+		except ValueError:
+			print('Нужно ввести цифру!')
+			selected_element = self.get_input()
 
 		return selected_element
 
 	def run_callback(self, index: int) -> None:
 		''' Запустить выбранный callback '''
 
-		self.callbacks[index]()
+		if index is not None:
+			self.callbacks[index]()
+
+
+class AskVolume(AskPage):
+	''' Страница настройки громкости '''
+
+	name = 'volume_settings'
+
+	def __init__(self, path_manager: PathManager, radio: Radio):
+		super().__init__(self.name)
+		self.path_manager = path_manager
+		self.radio = radio
+		self.callbacks = [
+			lambda: self.path_manager.back(),
+		]
+
+	def show_text(self) -> None:
+		print('Для настройки используй кнопки ↑ и ↓.\nДля выхода нажми Enter.')
+
+	def get_volume_scale(self) -> str:
+		if not hasattr(self.radio, 'player'):
+			return 'сначала нужно выбрать станцию.'
+
+		player = self.radio.player
+		volume = player.audio_get_volume()
+
+		output = '| ' + ('█' * (volume // 5)).ljust(20)
+		output += ' | {}%'.format(str(volume).rjust(3))
+		return output
+
+	def volume_up(self) -> None:
+		''' Увеличить громкость '''
+
+		if not hasattr(self.radio, 'player'):
+			return
+
+		player = self.radio.player
+		volume = player.audio_get_volume()
+
+		if volume >= 100:
+			return
+
+		player.audio_set_volume(volume+1)
+
+	def volume_down(self) -> None:
+		''' Снизить громкость '''
+
+		if not hasattr(self.radio, 'player'):
+			return
+
+		player = self.radio.player
+		volume = player.audio_get_volume()
+
+		if volume <= 0:
+			return
+
+		player.audio_set_volume(volume-1)
+
+	def get_input(self) -> None:
+		self.show_text()
+		print('\rГромкость {}'.format(self.get_volume_scale()), end='')
+		while True:
+			pressed_key = msvcrt.getch()
+			if ord(pressed_key) == 13:		# Enter
+				print('\n')
+				self.path_manager.back()
+				return None
+			elif ord(pressed_key) == 72:	# ↑
+				self.volume_up()
+			elif ord(pressed_key) == 80:	# ↓
+				self.volume_down()
+			print('\rГромкость {}'.format(self.get_volume_scale()), end='')
 
 
 class AskManager:
@@ -231,8 +288,14 @@ class AskManager:
 		self.__asks: AskPage = []
 		self.path_manager = PathManager(self)
 
-		self.add_ask(AskMenu(path_manager=self.path_manager))
-		self.add_ask(AskStation(path_manager=self.path_manager))
+		station_page = AskStation(path_manager=self.path_manager)
+		menu_page = AskMenu(path_manager=self.path_manager,
+		                    radio=station_page.radio)
+		volume_page = AskVolume(path_manager=self.path_manager,
+		                        radio=station_page.radio)
+		self.add_ask(menu_page)
+		self.add_ask(station_page)
+		self.add_ask(volume_page)
 
 		self.__current_page = self.__asks[0]
 
